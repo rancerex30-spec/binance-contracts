@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Binance Contracts</title>
+    <link rel="stylesheet" href="./binance_contract_timeline.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Binance Contracts</p>
+          <h1>按上架时间查看币安合约交易对</h1>
+          <p class="hero-text">
+            支持按时间段筛选、搜索交易对，并按上架时间正序或倒序查看结果。
+          </p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <span class="stat-label">当前结果</span>
+            <strong id="contract-count">-</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">覆盖币种</span>
+            <strong id="token-count">-</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">时间范围</span>
+            <strong id="date-range">-</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="controls">
+        <label class="field field-search">
+          <span>搜索交易对</span>
+          <input id="search-input" type="search" placeholder="例如 BTCUSDT、ETHUSD_PERP" />
+        </label>
+
+        <label class="field">
+          <span>开始时间</span>
+          <input id="start-date" type="date" />
+        </label>
+
+        <label class="field">
+          <span>结束时间</span>
+          <input id="end-date" type="date" />
+        </label>
+
+        <label class="field">
+          <span>排序方式</span>
+          <select id="sort-select">
+            <option value="desc">最新上架在前</option>
+            <option value="asc">最早上架在前</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="toolbar">
+        <div class="filters">
+          <button class="filter-chip active" data-market="ALL" type="button">全部市场</button>
+          <button class="filter-chip" data-market="USD-M" type="button">USD-M</button>
+          <button class="filter-chip" data-market="COIN-M" type="button">COIN-M</button>
+        </div>
+        <div class="toolbar-actions">
+          <span id="sync-status" class="sync-status">准备连接币安...</span>
+          <button id="home-button" class="reset-button hidden" type="button">返回首页列表</button>
+          <button id="refresh-button" class="reset-button" type="button">立即刷新</button>
+          <button id="reset-button" class="reset-button" type="button">清空筛选</button>
+        </div>
+      </section>
+
+      <section class="results-bar">
+        <p id="result-summary">正在加载交易对数据...</p>
+      </section>
+
+      <section id="delist-section" class="delist-section hidden">
+        <div class="section-heading">
+          <div>
+            <h2>合约下架公告列表</h2>
+            <p id="delist-summary">当前没有已公告下架的交易对。</p>
+          </div>
+        </div>
+        <div class="table-shell">
+          <table class="contracts-table">
+            <thead>
+              <tr>
+                <th>预计下架时间</th>
+                <th>交易对</th>
+                <th>市场</th>
+                <th>基础币</th>
+                <th>计价币</th>
+                <th>代币类型</th>
+              </tr>
+            </thead>
+            <tbody id="delist-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <main>
+        <div class="table-shell">
+          <table class="contracts-table">
+            <thead>
+              <tr>
+                <th>上架时间</th>
+                <th>交易对</th>
+                <th>市场</th>
+                <th>基础币</th>
+                <th>计价币</th>
+                <th>代币类型</th>
+                <th>合约类型</th>
+              </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+
+        <section id="pagination" class="pagination hidden">
+          <button id="prev-page" class="page-button" type="button">上一页</button>
+          <div id="page-numbers" class="page-numbers"></div>
+          <button id="next-page" class="page-button" type="button">下一页</button>
+        </section>
+
+        <div id="empty-state" class="empty-state hidden">
+          <h2>没有匹配结果</h2>
+          <p>调整搜索词或时间范围后再试试。</p>
+        </div>
+      </main>
+    </div>
+    <script src="./binance_contract_timeline.js"></script>
+  </body>
+</html>
