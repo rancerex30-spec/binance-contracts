@@ -224,14 +224,12 @@ function renderDelistAnnouncements(items) {
   const fragment = document.createDocumentFragment();
   items.forEach((item) => {
     const row = document.createElement("tr");
-    row.innerHTML = `
-      <td data-label="预计下架时间">${formatDate(item.deliveryDate)}</td>
-      <td data-label="交易对"><strong>${item.symbol}</strong></td>
-      <td data-label="市场"><span class="market-badge">${item.market}</span></td>
-      <td data-label="基础币">${item.baseAsset}</td>
-      <td data-label="计价币">${item.quoteAsset}</td>
-      <td data-label="代币类型"><span class="type-badge">${item.tokenCategory || "-"}</span></td>
-    `;
+    row.appendChild(createCell("预计下架时间", formatDate(item.deliveryDate)));
+    row.appendChild(createStrongCell("交易对", item.symbol));
+    row.appendChild(createBadgeCell("市场", item.market, "market-badge"));
+    row.appendChild(createCell("基础币", item.baseAsset));
+    row.appendChild(createCell("计价币", item.quoteAsset));
+    row.appendChild(createBadgeCell("代币类型", item.tokenCategory || "-", "type-badge"));
     fragment.appendChild(row);
   });
 
@@ -340,6 +338,32 @@ function getTotalPages(totalItems) {
   return Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
 }
 
+function createCell(label, value) {
+  const cell = document.createElement("td");
+  cell.dataset.label = label;
+  cell.textContent = value ?? "-";
+  return cell;
+}
+
+function createStrongCell(label, value) {
+  const cell = document.createElement("td");
+  cell.dataset.label = label;
+  const strong = document.createElement("strong");
+  strong.textContent = value ?? "-";
+  cell.appendChild(strong);
+  return cell;
+}
+
+function createBadgeCell(label, value, className) {
+  const cell = document.createElement("td");
+  cell.dataset.label = label;
+  const span = document.createElement("span");
+  span.className = className;
+  span.textContent = value ?? "-";
+  cell.appendChild(span);
+  return cell;
+}
+
 function getPagedContracts(items) {
   const totalPages = getTotalPages(items.length);
   state.currentPage = Math.min(state.currentPage, totalPages);
@@ -440,15 +464,13 @@ function renderTable(items, options = {}) {
 
   pageItems.forEach((item) => {
     const row = document.createElement("tr");
-    row.innerHTML = `
-      <td data-label="上架时间">${formatDate(item.onboardDate)}</td>
-      <td data-label="交易对"><strong>${item.symbol}</strong></td>
-      <td data-label="市场"><span class="market-badge">${item.market}</span></td>
-      <td data-label="基础币">${item.baseAsset}</td>
-      <td data-label="计价币">${item.quoteAsset}</td>
-      <td data-label="代币类型"><span class="type-badge">${item.tokenCategory || "-"}</span></td>
-      <td data-label="合约类型">${item.contractType}</td>
-    `;
+    row.appendChild(createCell("上架时间", formatDate(item.onboardDate)));
+    row.appendChild(createStrongCell("交易对", item.symbol));
+    row.appendChild(createBadgeCell("市场", item.market, "market-badge"));
+    row.appendChild(createCell("基础币", item.baseAsset));
+    row.appendChild(createCell("计价币", item.quoteAsset));
+    row.appendChild(createBadgeCell("代币类型", item.tokenCategory || "-", "type-badge"));
+    row.appendChild(createCell("合约类型", item.contractType));
     fragment.appendChild(row);
   });
 
