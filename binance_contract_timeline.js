@@ -261,14 +261,16 @@ function renderDelistAnnouncements(items) {
   }
 
   delistSectionEl.classList.remove("hidden");
-  delistSummaryEl.textContent = `共 ${items.length} 个交易对已进入币安下架公告列表，这些交易对已从主列表中移除，并优先展示公告发布时间与公告下架时间。`;
+  delistSummaryEl.textContent = `共 ${items.length} 条公告匹配结果已进入下架列表；状态标记会区分“未上现货 / 未上合约 / 合约已下架 / 合约下架中”，并且只展示当前这一侧仍存在的市场时间。`;
 
   const fragment = document.createDocumentFragment();
   items.forEach((item) => {
     const row = document.createElement("tr");
     row.appendChild(createCell("公告发布时间", formatAnnouncementPublishedAt(item.announcementPublishedAt)));
-    row.appendChild(createCell("公告下架时间", formatAnnouncementDelistTime(item.announcementDelistTimeText)));
     row.appendChild(createStrongCell("交易对", item.symbol));
+    row.appendChild(createCell("现货下架时间", formatAnnouncementDelistTime(item.announcementSpotDelistTimeText)));
+    row.appendChild(createCell("合约下架时间", formatAnnouncementDelistTime(item.announcementFuturesDelistTimeText)));
+    row.appendChild(createBadgeCell("状态标记", item.availability || "-", "status-badge"));
     row.appendChild(createBadgeCell("市场", item.market, "market-badge"));
     row.appendChild(createCell("基础币", item.baseAsset));
     row.appendChild(createCell("计价币", item.quoteAsset));
