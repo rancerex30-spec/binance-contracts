@@ -7,16 +7,17 @@ const state = {
   currentPage: 1,
 };
 
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+const BACKGROUND_REFRESH_POLL_MS = 4 * 1000;
+const BACKGROUND_REFRESH_MAX_POLLS = 6;
 const PAGE_SIZE = 50;
-const USD_M_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo";
-const COIN_M_URL = "https://dapi.binance.com/dapi/v1/exchangeInfo";
-const PERPETUAL_DELIST_THRESHOLD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
 
 let contractsData = [];
 let delistAnnouncements = [];
 let lastFetchedAt = "";
 let isLoading = false;
+let backgroundRefreshPollTimer = null;
+let backgroundRefreshPollCount = 0;
 
 const tableBodyEl = document.getElementById("table-body");
 const emptyStateEl = document.getElementById("empty-state");
@@ -79,6 +80,82 @@ function formatDateTime(value) {
   }).format(new Date(value));
 }
 
+function formatChinaDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function parseAnnouncementDateTime(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  let match = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?\s*(?:\((UTC(?:\+?8)?)\)|\s+(UTC(?:\+?8)?))$/i
+  );
+  if (match) {
+    const [, year, month, day, hour, minute, second = "00", zoneA, zoneB] = match;
+    const zone = String(zoneA || zoneB || "UTC").toUpperCase();
+    const offsetHours = zone.includes("+8") ? 8 : 0;
+    return Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour) - offsetHours,
+      Number(minute),
+      Number(second)
+    );
+  }
+
+  match = text.match(
+    /^(\d{4})年(\d{2})月(\d{2})日\s+(\d{2}):(\d{2})(?::(\d{2}))?\s*[（(]?(东八区时间|UTC\+?8|UTC)[）)]?$/i
+  );
+  if (match) {
+    const [, year, month, day, hour, minute, second = "00", zoneText] = match;
+    const zone = String(zoneText || "UTC").toUpperCase();
+    const offsetHours = zone.includes("8") || zone.includes("东八区") ? 8 : 0;
+    return Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour) - offsetHours,
+      Number(minute),
+      Number(second)
+    );
+  }
+
+  return null;
+}
+
+function formatAnnouncementPublishedAt(value) {
+  return formatChinaDateTime(value);
+}
+
+function formatAnnouncementDelistTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const parsed = parseAnnouncementDateTime(value);
+  if (parsed === null) {
+    return value;
+  }
+
+  return `${formatChinaDateTime(parsed)} (UTC+8)`;
+}
+
 function parseStartDate(value) {
   return value ? new Date(`${value}T00:00:00`).getTime() : null;
 }
@@ -127,59 +204,24 @@ function updateSyncStatus(text) {
   syncStatusEl.textContent = text;
 }
 
-function buildContract(item, market, status) {
-  const underlyingSubType = Array.isArray(item.underlyingSubType) ? item.underlyingSubType : [];
-
-  return {
-    symbol: item.symbol,
-    pair: item.pair,
-    market,
-    baseAsset: item.baseAsset,
-    quoteAsset: item.quoteAsset,
-    marginAsset: item.marginAsset,
-    underlyingType: item.underlyingType,
-    underlyingSubType,
-    tokenCategory: underlyingSubType.length ? underlyingSubType.join(" / ") : item.underlyingType || "Unknown",
-    contractType: item.contractType,
-    status,
-    onboardDate: item.onboardDate,
-    deliveryDate: item.deliveryDate,
-  };
+function clearBackgroundRefreshPoll() {
+  if (backgroundRefreshPollTimer) {
+    window.clearTimeout(backgroundRefreshPollTimer);
+    backgroundRefreshPollTimer = null;
+  }
+  backgroundRefreshPollCount = 0;
 }
 
-function isScheduledDelist(item) {
-  if (!item || !item.deliveryDate || !String(item.contractType || "").includes("PERPETUAL")) {
-    return false;
+function scheduleBackgroundRefreshPoll() {
+  if (backgroundRefreshPollTimer || backgroundRefreshPollCount >= BACKGROUND_REFRESH_MAX_POLLS) {
+    return;
   }
 
-  const nowMs = Date.now();
-  return item.deliveryDate < nowMs + PERPETUAL_DELIST_THRESHOLD_MS;
-}
-
-function normalizePayload(usdmPayload, coinmPayload) {
-  const usdm = (usdmPayload.symbols || [])
-    .filter((item) => item.status === "TRADING")
-    .map((item) => buildContract(item, "USD-M", item.status));
-
-  const coinm = (coinmPayload.symbols || [])
-    .filter((item) => item.contractStatus === "TRADING")
-    .map((item) => buildContract(item, "COIN-M", item.contractStatus));
-
-  const allContracts = [...usdm, ...coinm].sort((a, b) => {
-    return (a.onboardDate || 0) - (b.onboardDate || 0) || String(a.symbol || "").localeCompare(String(b.symbol || ""));
-  });
-
-  return allContracts.reduce(
-    (accumulator, item) => {
-      if (isScheduledDelist(item)) {
-        accumulator.delistAnnouncements.push(item);
-      } else {
-        accumulator.contracts.push(item);
-      }
-      return accumulator;
-    },
-    { contracts: [], delistAnnouncements: [] }
-  );
+  backgroundRefreshPollCount += 1;
+  backgroundRefreshPollTimer = window.setTimeout(() => {
+    backgroundRefreshPollTimer = null;
+    loadContracts({ followup: true });
+  }, BACKGROUND_REFRESH_POLL_MS);
 }
 
 function getSearchKeyword() {
@@ -219,12 +261,13 @@ function renderDelistAnnouncements(items) {
   }
 
   delistSectionEl.classList.remove("hidden");
-  delistSummaryEl.textContent = `共 ${items.length} 个交易对已进入币安下架公告列表，这些交易对已从主列表中移除。`;
+  delistSummaryEl.textContent = `共 ${items.length} 个交易对已进入币安下架公告列表，这些交易对已从主列表中移除，并优先展示公告发布时间与公告下架时间。`;
 
   const fragment = document.createDocumentFragment();
   items.forEach((item) => {
     const row = document.createElement("tr");
-    row.appendChild(createCell("预计下架时间", formatDate(item.deliveryDate)));
+    row.appendChild(createCell("公告发布时间", formatAnnouncementPublishedAt(item.announcementPublishedAt)));
+    row.appendChild(createCell("公告下架时间", formatAnnouncementDelistTime(item.announcementDelistTimeText)));
     row.appendChild(createStrongCell("交易对", item.symbol));
     row.appendChild(createBadgeCell("市场", item.market, "market-badge"));
     row.appendChild(createCell("基础币", item.baseAsset));
@@ -243,58 +286,45 @@ async function loadContracts(options = {}) {
 
   isLoading = true;
   refreshButtonEl.disabled = true;
-  updateSyncStatus(options.force ? "正在强制刷新..." : "正在同步币安合约...");
+  updateSyncStatus(
+    options.force ? "正在强制刷新..." : options.followup ? "正在检查后台刷新结果..." : "正在同步币安合约..."
+  );
 
   try {
-    let payload;
+    const apiResponse = await fetch(options.force ? "/api/contracts?force=1" : "/api/contracts", {
+      cache: "no-store",
+    });
 
-    try {
-      const apiResponse = await fetch(options.force ? "/api/contracts?force=1" : "/api/contracts", {
-        cache: "no-store",
-      });
-
-      if (!apiResponse.ok) {
-        throw new Error(`API HTTP ${apiResponse.status}`);
-      }
-
-      payload = await apiResponse.json();
-      contractsData = Array.isArray(payload.contracts) ? payload.contracts : [];
-      delistAnnouncements = Array.isArray(payload.delistAnnouncements) ? payload.delistAnnouncements : [];
-      lastFetchedAt = payload.fetchedAt || new Date().toISOString();
-    } catch (_error) {
-      const [usdmResponse, coinmResponse] = await Promise.all([
-        fetch(USD_M_URL, { cache: "no-store" }),
-        fetch(COIN_M_URL, { cache: "no-store" }),
-      ]);
-
-      if (!usdmResponse.ok) {
-        throw new Error(`USD-M HTTP ${usdmResponse.status}`);
-      }
-
-      if (!coinmResponse.ok) {
-        throw new Error(`COIN-M HTTP ${coinmResponse.status}`);
-      }
-
-      const [usdmPayload, coinmPayload] = await Promise.all([usdmResponse.json(), coinmResponse.json()]);
-      const normalized = normalizePayload(usdmPayload, coinmPayload);
-
-      contractsData = normalized.contracts;
-      delistAnnouncements = normalized.delistAnnouncements;
-      lastFetchedAt = new Date().toISOString();
+    if (!apiResponse.ok) {
+      throw new Error(`API HTTP ${apiResponse.status}`);
     }
+
+    const payload = await apiResponse.json();
+    contractsData = Array.isArray(payload.contracts) ? payload.contracts : [];
+    delistAnnouncements = Array.isArray(payload.delistAnnouncements) ? payload.delistAnnouncements : [];
+    lastFetchedAt = payload.fetchedAt || new Date().toISOString();
 
     initDateRange();
     renderDelistAnnouncements(delistAnnouncements);
     render();
 
     const refreshedAt = formatDateTime(lastFetchedAt);
-    updateSyncStatus(
-      `已同步 ${contractsData.length} 个活跃交易对，已剔除 ${delistAnnouncements.length} 个下架公告交易对 · 上次更新 ${refreshedAt}`
-    );
+    if (payload.refreshing) {
+      updateSyncStatus(
+        `后台刷新中 · 当前展示 ${contractsData.length} 个活跃交易对、${delistAnnouncements.length} 个下架公告交易对 · 缓存时间 ${refreshedAt} · 约 ${BACKGROUND_REFRESH_POLL_MS / 1000} 秒后自动复查`
+      );
+      scheduleBackgroundRefreshPoll();
+    } else {
+      clearBackgroundRefreshPoll();
+      updateSyncStatus(
+        `已同步 ${contractsData.length} 个活跃交易对，已剔除 ${delistAnnouncements.length} 个下架公告交易对 · 上次更新 ${refreshedAt}`
+      );
+    }
   } catch (error) {
+    clearBackgroundRefreshPoll();
     updateSyncStatus(`同步失败 · ${error.message}`);
     renderDelistAnnouncements([]);
-    renderTable([], { emptyMessage: "无法从币安官方接口拉取最新合约数据。" });
+    renderTable([], { emptyMessage: "无法从站内合约接口拉取最新数据。" });
   } finally {
     isLoading = false;
     refreshButtonEl.disabled = false;
@@ -579,10 +609,11 @@ nextPageEl.addEventListener("click", () => {
 });
 
 refreshButtonEl.addEventListener("click", () => {
+  clearBackgroundRefreshPoll();
   loadContracts({ force: true });
 });
 
 loadContracts();
 window.setInterval(() => {
-  loadContracts();
+  loadContracts({ force: true });
 }, REFRESH_INTERVAL_MS);
