@@ -1,3 +1,4 @@
+const SPOT_URL = "https://api.binance.com/api/v3/exchangeInfo";
 const USD_M_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo";
 const COIN_M_URL = "https://dapi.binance.com/dapi/v1/exchangeInfo";
 const ANNOUNCEMENT_CATALOG_ID = 161;
@@ -11,6 +12,7 @@ const ANNOUNCEMENT_TITLE_KEYWORDS = [
   "CEASE SUPPORT",
   "POSTPONED",
 ];
+const INCLUDED_CONTRACT_STATUSES = new Set(["TRADING", "SETTLING"]);
 const DELIST_TIME_PATTERNS = [
   /\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*\(UTC\+?8\)/i,
   /\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*\(UTC\)/i,
@@ -50,6 +52,105 @@ function buildContract(item, market, status) {
     onboardDate: item.onboardDate,
     deliveryDate: item.deliveryDate,
   };
+}
+
+function pickPreferredSpotSymbol(symbols) {
+  const preferredQuotes = ["USDT", "FDUSD", "USDC", "BUSD", "BTC", "ETH"];
+  const ordered = [...symbols].sort((left, right) => {
+    const leftRank = preferredQuotes.indexOf(left.quoteAsset);
+    const rightRank = preferredQuotes.indexOf(right.quoteAsset);
+    return (leftRank === -1 ? 999 : leftRank) - (rightRank === -1 ? 999 : rightRank) || String(left.symbol).localeCompare(String(right.symbol));
+  });
+
+  return ordered[0] || null;
+}
+
+function buildSpotAssetMap(spotPayload) {
+  const values = new Map();
+
+  (spotPayload?.symbols || []).forEach((item) => {
+    if (item?.status !== "TRADING" || item?.isSpotTradingAllowed === false) {
+      return;
+    }
+
+    const baseAsset = normalizeText(item.baseAsset);
+    if (!baseAsset) {
+      return;
+    }
+
+    const current = values.get(baseAsset) || [];
+    current.push({
+      symbol: item.symbol,
+      baseAsset: item.baseAsset,
+      quoteAsset: item.quoteAsset,
+    });
+    values.set(baseAsset, current);
+  });
+
+  values.forEach((symbols, baseAsset) => {
+    const preferredSymbol = pickPreferredSpotSymbol(symbols);
+    values.set(baseAsset, {
+      baseAsset,
+      symbols,
+      preferredSymbol: preferredSymbol?.symbol || null,
+      quoteAsset: preferredSymbol?.quoteAsset || null,
+    });
+  });
+
+  return values;
+}
+
+function buildContractAssetMap(items) {
+  const values = new Map();
+
+  items.forEach((item) => {
+    const baseAsset = normalizeText(item.baseAsset);
+    if (!baseAsset) {
+      return;
+    }
+
+    const current = values.get(baseAsset) || [];
+    current.push(item);
+    values.set(baseAsset, current);
+  });
+
+  return values;
+}
+
+function getAvailabilityLabel({ hasCurrentSpot, hasCurrentFutures, futuresStatus, hadSpotAnnouncement, hadFuturesAnnouncement }) {
+  if (hasCurrentSpot && hasCurrentFutures) {
+    return "现货+合约";
+  }
+
+  if (hasCurrentSpot && !hasCurrentFutures) {
+    if (futuresStatus === "SETTLING") {
+      return "现货在售/合约下架中";
+    }
+
+    return hadFuturesAnnouncement ? "现货在售/合约已下架" : "仅现货/未上合约";
+  }
+
+  if (!hasCurrentSpot && hasCurrentFutures) {
+    if (futuresStatus === "SETTLING") {
+      return hadSpotAnnouncement ? "现货已下架/合约下架中" : "未上现货/合约下架中";
+    }
+
+    return hadSpotAnnouncement ? "现货已下架/仅合约" : "未上现货/仅合约";
+  }
+
+  if (hadSpotAnnouncement && hadFuturesAnnouncement) {
+    return "现货已下架/合约已下架";
+  }
+
+  if (hadSpotAnnouncement) {
+    return "现货已下架/未上合约";
+  }
+
+  if (hadFuturesAnnouncement) {
+    return "未上现货/合约已下架";
+  }
+
+  return "未上现货/未上合约";
 }
 
 async function fetchJson(url) {
@@ -151,6 +252,100 @@ function extractAnnouncementDelistTimeText(bodyText) {
   return null;
 }
 
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractSectionText(bodyText, startLabel, endLabels) {
+  const startPattern = escapeRegex(startLabel);
+  const endPattern = endLabels.map((label) => escapeRegex(label)).join("|");
+  const matcher = new RegExp(`${startPattern}\\s*([\\s\\S]*?)(?=${endPattern}|$)`, "i");
+  const matched = bodyText.match(matcher);
+  return matched ? matched[1].trim() : "";
+}
+
+function extractFirstSectionText(bodyText, startLabels, endLabels) {
+  for (const startLabel of startLabels) {
+    const sectionText = extractSectionText(bodyText, startLabel, endLabels);
+    if (sectionText) {
+      return sectionText;
+    }
+  }
+
+  return "";
+}
+
+function extractFirstMatchingTime(text, patterns) {
+  for (const pattern of patterns) {
+    const matched = text.match(pattern);
+    if (matched) {
+      return matched[0].trim();
+    }
+  }
+  return null;
+}
+
+function extractGeneralDelistTimeText(bodyText) {
+  const matched = bodyText.match(
+    /(?:决定于|将于)\s*((?:\d{4}-\d{2}-\d{2}|\d{4}年\d{2}月\d{2}日)\s+\d{2}:\d{2}(?::\d{2})?\s*(?:[（(]?(?:东八区时间|UTC\+?8|UTC)[）)]?)?)\s*(?:停止交易并下架|下架以下币种)/i
+  );
+  return matched ? matched[1].trim() : extractAnnouncementDelistTimeText(bodyText);
+}
+
+function extractSectionDelistTimeText(sectionText, preferredPatterns) {
+  if (!sectionText) {
+    return null;
+  }
+
+  const lines = sectionText.split(/[。！？\n]/).map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (!preferredPatterns.some((pattern) => pattern.test(line))) {
+      continue;
+    }
+
+    const timeText = extractFirstMatchingTime(line, DELIST_TIME_PATTERNS);
+    if (timeText) {
+      return timeText;
+    }
+  }
+
+  return extractAnnouncementDelistTimeText(sectionText);
+}
+
+function extractFuturesDelistTimeText(bodyText) {
+  const directPatterns = [
+    /Binance Futures[\s\S]{0,800}?at\s*((?:\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}(?::\d{2})?\s*\(UTC(?:\+?8)?\))/i,
+    /币安合约[\s\S]{0,800}?于\s*((?:\d{4}-\d{2}-\d{2}|\d{4}年\d{2}月\d{2}日)\s+\d{2}:\d{2}(?::\d{2})?\s*(?:[（(]?(?:东八区时间|UTC\+?8|UTC)[）)]?)?)/i,
+  ];
+
+  for (const pattern of directPatterns) {
+    const matched = bodyText.match(pattern);
+    if (matched) {
+      return matched[1].trim();
+    }
+  }
+
+  return extractSectionDelistTimeText(
+    extractFirstSectionText(bodyText, ["币安合约", "Binance Futures"], [
+      "币安资金费率套利机器人",
+      "币安赚币",
+      "币安矿池",
+      "币安借币",
+      "币安杠杆",
+      "币安闪兑",
+      "Binance Funding Rate Arbitrage Bot",
+      "Funding Rate Arbitrage Bot",
+      "Binance Earn",
+      "Simple Earn",
+      "Binance Pool",
+      "Binance Loans",
+      "Binance Margin",
+      "Binance Convert",
+    ]),
+    [/自动清算/i, /永续合约/i, /交易对/i, /下架/i, /automatic settlement/i, /automatically settle/i, /perpetual/i, /delist/i]
+  );
+}
+
 function parseAnnouncementDelistTime(value) {
   const text = String(value || "").trim();
   if (!text) {
@@ -213,10 +408,13 @@ function extractAnnouncementAssetsFromBody(bodyText) {
   return matches.map((item) => normalizeText(item.replace(/[()]/g, "")));
 }
 
-function buildAnnouncementMatcherSet(items) {
+function buildAnnouncementMatcherSet(items, spotAssetMap) {
   const values = new Set();
   items.forEach((item) => {
     values.add(normalizeText(item.baseAsset));
+  });
+  [...spotAssetMap.keys()].forEach((value) => {
+    values.add(value);
   });
   values.delete("");
   return values;
@@ -243,12 +441,13 @@ function scoreAnnouncementMatch(contract, announcement) {
   return score;
 }
 
-async function fetchDelistAnnouncementMetadata(items) {
+async function fetchDelistAnnouncementMetadata(items, spotAssetMap) {
   if (!items.length) {
     return [];
   }
 
-  const matcherSet = buildAnnouncementMatcherSet(items);
+  const matcherSet = buildAnnouncementMatcherSet(items, spotAssetMap);
+  const contractAssetMap = buildContractAssetMap(items);
   const pagePayloads = await fetchAnnouncementPagePayloads();
 
   const latestCandidateArticles = pagePayloads
@@ -281,30 +480,71 @@ async function fetchDelistAnnouncementMetadata(items) {
     }
   });
 
-  return items.map((item) => {
-    const bestMatch = announcements
-      .map((announcement) => ({
-        announcement,
-        score: scoreAnnouncementMatch(item, announcement),
-      }))
-      .filter((candidate) => candidate.score > 0)
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
+  return announcements
+    .flatMap((announcement) => {
+      return announcement.assets.flatMap((asset) => {
+        const baseAsset = normalizeText(asset);
+        const contracts = contractAssetMap.get(baseAsset) || [];
+        const spotInfo = spotAssetMap.get(baseAsset) || null;
+
+        if (contracts.length) {
+          return contracts.map((item) => ({
+            ...item,
+            availability: getAvailabilityLabel({
+              hasCurrentSpot: Boolean(spotInfo),
+              hasCurrentFutures: item.status === "TRADING",
+              futuresStatus: item.status,
+              hadSpotAnnouncement: Boolean(announcement.spotDelistTimeText),
+              hadFuturesAnnouncement: Boolean(announcement.futuresDelistTimeText),
+            }),
+            hasSpot: Boolean(spotInfo),
+            hasFutures: item.status === "TRADING",
+            hasContractRecord: true,
+            announcementPublishedAt: announcement.releaseDate || null,
+            announcementSpotDelistTimeText: spotInfo ? announcement.spotDelistTimeText || null : null,
+            announcementFuturesDelistTimeText: item.status === "TRADING" ? announcement.futuresDelistTimeText || null : null,
+          }));
         }
-        return (right.announcement.releaseDate || 0) - (left.announcement.releaseDate || 0);
-      })[0];
 
-    if (!bestMatch) {
-      return null;
-    }
+        if (!spotInfo) {
+          return [];
+        }
 
-    return {
-      ...item,
-      announcementPublishedAt: bestMatch.announcement.releaseDate || null,
-      announcementDelistTimeText: bestMatch.announcement.delistTimeText || null,
-    };
-  }).filter(Boolean);
+        return [
+          {
+            symbol: spotInfo.preferredSymbol || `${baseAsset}（仅现货）`,
+            pair: spotInfo.preferredSymbol || baseAsset,
+            market: "仅现货",
+            baseAsset,
+            quoteAsset: spotInfo.quoteAsset || "-",
+            marginAsset: null,
+            underlyingType: null,
+            underlyingSubType: [],
+            tokenCategory: "仅现货",
+            contractType: "SPOT_ONLY",
+            status: "SPOT_ONLY",
+            onboardDate: null,
+            deliveryDate: null,
+            availability: getAvailabilityLabel({
+              hasCurrentSpot: true,
+              hasCurrentFutures: false,
+              futuresStatus: null,
+              hadSpotAnnouncement: Boolean(announcement.spotDelistTimeText),
+              hadFuturesAnnouncement: Boolean(announcement.futuresDelistTimeText),
+            }),
+            hasSpot: true,
+            hasFutures: false,
+            hasContractRecord: false,
+            announcementPublishedAt: announcement.releaseDate || null,
+            announcementSpotDelistTimeText: announcement.spotDelistTimeText || null,
+            announcementFuturesDelistTimeText: null,
+          },
+        ];
+      });
+    })
+    .sort((left, right) => {
+      return (right.announcementPublishedAt || 0) - (left.announcementPublishedAt || 0) || String(left.symbol || "").localeCompare(String(right.symbol || ""));
+    });
 }
 
 async function fetchAnnouncementPagePayloads() {
@@ -339,8 +579,11 @@ async function fetchAnnouncementDetails(candidateArticles) {
             code: article.code,
             title: article.title,
             releaseDate: article.releaseDate,
-            delistTimeText: extractAnnouncementDelistTimeText(bodyText),
-            delistTimestamp: parseAnnouncementDelistTime(extractAnnouncementDelistTimeText(bodyText)),
+            spotDelistTimeText: extractGeneralDelistTimeText(bodyText),
+            futuresDelistTimeText: extractFuturesDelistTimeText(bodyText),
+            delistTimestamp: parseAnnouncementDelistTime(
+              extractFuturesDelistTimeText(bodyText) || extractGeneralDelistTimeText(bodyText)
+            ),
             assets: [...new Set([...(article.titleAssets || []), ...extractAnnouncementAssetsFromBody(bodyText)])],
           },
         ];
@@ -359,11 +602,11 @@ async function fetchAnnouncementDetails(candidateArticles) {
 
 function normalizePayload(usdmPayload, coinmPayload) {
   const usdm = (usdmPayload.symbols || [])
-    .filter((item) => item.status === "TRADING")
+    .filter((item) => INCLUDED_CONTRACT_STATUSES.has(item.status))
     .map((item) => buildContract(item, "USD-M", item.status));
 
   const coinm = (coinmPayload.symbols || [])
-    .filter((item) => item.contractStatus === "TRADING")
+    .filter((item) => INCLUDED_CONTRACT_STATUSES.has(item.contractStatus))
     .map((item) => buildContract(item, "COIN-M", item.contractStatus));
 
   const contracts = [...usdm, ...coinm].sort((a, b) => {
@@ -374,10 +617,19 @@ function normalizePayload(usdmPayload, coinmPayload) {
 }
 
 async function rebuildContractsPayload() {
-  const [usdmPayload, coinmPayload] = await Promise.all([fetchJson(USD_M_URL), fetchJson(COIN_M_URL)]);
+  const [spotPayload, usdmPayload, coinmPayload] = await Promise.all([
+    fetchJson(SPOT_URL),
+    fetchJson(USD_M_URL),
+    fetchJson(COIN_M_URL),
+  ]);
   const payload = normalizePayload(usdmPayload, coinmPayload);
-  const enrichedDelistAnnouncements = await fetchDelistAnnouncementMetadata(payload.contracts);
-  const delistSymbols = new Set(enrichedDelistAnnouncements.map((item) => `${item.market}:${item.symbol}`));
+  const spotAssetMap = buildSpotAssetMap(spotPayload);
+  const enrichedDelistAnnouncements = await fetchDelistAnnouncementMetadata(payload.contracts, spotAssetMap);
+  const delistSymbols = new Set(
+    enrichedDelistAnnouncements
+      .filter((item) => item.hasContractRecord)
+      .map((item) => `${item.market}:${item.symbol}`)
+  );
   const activeContracts = payload.contracts.filter((item) => !delistSymbols.has(`${item.market}:${item.symbol}`));
   return {
     contracts: activeContracts,
