@@ -90,6 +90,9 @@ export async function onRequestGet() {
       headers: {
         "content-type": "application/json; charset=utf-8",
         "cache-control": `public, max-age=0, s-maxage=${CACHE_TTL_SECONDS}`,
+        "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "DENY",
       },
     });
   } catch (error) {
@@ -103,6 +106,9 @@ export async function onRequestGet() {
         headers: {
           "content-type": "application/json; charset=utf-8",
           "cache-control": "no-store",
+          "referrer-policy": "no-referrer",
+          "x-content-type-options": "nosniff",
+          "x-frame-options": "DENY",
         },
       }
     );
