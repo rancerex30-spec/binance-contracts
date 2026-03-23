@@ -8,16 +8,12 @@ const state = {
 };
 
 const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
-const BACKGROUND_REFRESH_POLL_MS = 4 * 1000;
-const BACKGROUND_REFRESH_MAX_POLLS = 6;
 const PAGE_SIZE = 50;
 
 let contractsData = [];
 let delistAnnouncements = [];
 let lastFetchedAt = "";
 let isLoading = false;
-let backgroundRefreshPollTimer = null;
-let backgroundRefreshPollCount = 0;
 
 const tableBodyEl = document.getElementById("table-body");
 const emptyStateEl = document.getElementById("empty-state");
@@ -204,26 +200,6 @@ function updateSyncStatus(text) {
   syncStatusEl.textContent = text;
 }
 
-function clearBackgroundRefreshPoll() {
-  if (backgroundRefreshPollTimer) {
-    window.clearTimeout(backgroundRefreshPollTimer);
-    backgroundRefreshPollTimer = null;
-  }
-  backgroundRefreshPollCount = 0;
-}
-
-function scheduleBackgroundRefreshPoll() {
-  if (backgroundRefreshPollTimer || backgroundRefreshPollCount >= BACKGROUND_REFRESH_MAX_POLLS) {
-    return;
-  }
-
-  backgroundRefreshPollCount += 1;
-  backgroundRefreshPollTimer = window.setTimeout(() => {
-    backgroundRefreshPollTimer = null;
-    loadContracts({ followup: true });
-  }, BACKGROUND_REFRESH_POLL_MS);
-}
-
 function getSearchKeyword() {
   return state.search.trim().toUpperCase();
 }
@@ -288,9 +264,7 @@ async function loadContracts(options = {}) {
 
   isLoading = true;
   refreshButtonEl.disabled = true;
-  updateSyncStatus(
-    options.force ? "正在强制刷新..." : options.followup ? "正在检查后台刷新结果..." : "正在同步币安合约..."
-  );
+  updateSyncStatus(options.force ? "正在强制刷新..." : "正在同步币安合约...");
 
   try {
     const apiResponse = await fetch(options.force ? "/api/contracts?force=1" : "/api/contracts", {
@@ -311,19 +285,10 @@ async function loadContracts(options = {}) {
     render();
 
     const refreshedAt = formatDateTime(lastFetchedAt);
-    if (payload.refreshing) {
-      updateSyncStatus(
-        `后台刷新中 · 当前展示 ${contractsData.length} 个活跃交易对、${delistAnnouncements.length} 个下架公告交易对 · 缓存时间 ${refreshedAt} · 约 ${BACKGROUND_REFRESH_POLL_MS / 1000} 秒后自动复查`
-      );
-      scheduleBackgroundRefreshPoll();
-    } else {
-      clearBackgroundRefreshPoll();
-      updateSyncStatus(
-        `已同步 ${contractsData.length} 个活跃交易对，已剔除 ${delistAnnouncements.length} 个下架公告交易对 · 上次更新 ${refreshedAt}`
-      );
-    }
+    updateSyncStatus(
+      `已同步 ${contractsData.length} 个活跃交易对，已剔除 ${delistAnnouncements.length} 个下架公告交易对 · 上次更新 ${refreshedAt}`
+    );
   } catch (error) {
-    clearBackgroundRefreshPoll();
     updateSyncStatus(`同步失败 · ${error.message}`);
     renderDelistAnnouncements([]);
     renderTable([], { emptyMessage: "无法从站内合约接口拉取最新数据。" });
@@ -611,7 +576,6 @@ nextPageEl.addEventListener("click", () => {
 });
 
 refreshButtonEl.addEventListener("click", () => {
-  clearBackgroundRefreshPoll();
   loadContracts({ force: true });
 });
 
