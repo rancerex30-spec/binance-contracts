@@ -9,6 +9,9 @@ const state = {
 
 const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const PAGE_SIZE = 50;
+const USD_M_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+const COIN_M_URL = "https://dapi.binance.com/dapi/v1/exchangeInfo";
+const INCLUDED_CONTRACT_STATUSES = new Set(["TRADING", "SETTLING"]);
 
 let contractsData = [];
 let delistAnnouncements = [];
@@ -200,6 +203,63 @@ function updateSyncStatus(text) {
   syncStatusEl.textContent = text;
 }
 
+function buildFallbackContract(item, market, status) {
+  const underlyingSubType = Array.isArray(item.underlyingSubType) ? item.underlyingSubType : [];
+
+  return {
+    symbol: item.symbol,
+    pair: item.pair,
+    market,
+    baseAsset: item.baseAsset,
+    quoteAsset: item.quoteAsset,
+    marginAsset: item.marginAsset,
+    underlyingType: item.underlyingType,
+    underlyingSubType,
+    tokenCategory: underlyingSubType.length ? underlyingSubType.join(" / ") : item.underlyingType || "Unknown",
+    contractType: item.contractType,
+    status,
+    onboardDate: item.onboardDate,
+    deliveryDate: item.deliveryDate,
+  };
+}
+
+function normalizeBrowserFallback(usdmPayload, coinmPayload) {
+  const usdm = (usdmPayload.symbols || [])
+    .filter((item) => INCLUDED_CONTRACT_STATUSES.has(item.status))
+    .map((item) => buildFallbackContract(item, "USD-M", item.status));
+
+  const coinm = (coinmPayload.symbols || [])
+    .filter((item) => INCLUDED_CONTRACT_STATUSES.has(item.contractStatus))
+    .map((item) => buildFallbackContract(item, "COIN-M", item.contractStatus));
+
+  const contracts = [...usdm, ...coinm].sort((a, b) => {
+    return (a.onboardDate || 0) - (b.onboardDate || 0) || String(a.symbol || "").localeCompare(String(b.symbol || ""));
+  });
+
+  return {
+    contracts,
+    delistAnnouncements: [],
+  };
+}
+
+async function loadContractsViaBrowserFallback() {
+  const [usdmResponse, coinmResponse] = await Promise.all([
+    fetch(USD_M_URL, { cache: "no-store" }),
+    fetch(COIN_M_URL, { cache: "no-store" }),
+  ]);
+
+  if (!usdmResponse.ok) {
+    throw new Error(`USD-M HTTP ${usdmResponse.status}`);
+  }
+
+  if (!coinmResponse.ok) {
+    throw new Error(`COIN-M HTTP ${coinmResponse.status}`);
+  }
+
+  const [usdmPayload, coinmPayload] = await Promise.all([usdmResponse.json(), coinmResponse.json()]);
+  return normalizeBrowserFallback(usdmPayload, coinmPayload);
+}
+
 function getSearchKeyword() {
   return state.search.trim().toUpperCase();
 }
@@ -267,15 +327,25 @@ async function loadContracts(options = {}) {
   updateSyncStatus(options.force ? "正在强制刷新..." : "正在同步币安合约...");
 
   try {
-    const apiResponse = await fetch(options.force ? "/api/contracts?force=1" : "/api/contracts", {
-      cache: "no-store",
-    });
+    let payload;
+    let usingBrowserFallback = false;
 
-    if (!apiResponse.ok) {
-      throw new Error(`API HTTP ${apiResponse.status}`);
+    try {
+      const apiResponse = await fetch(options.force ? "/api/contracts?force=1" : "/api/contracts", {
+        cache: "no-store",
+      });
+
+      if (!apiResponse.ok) {
+        throw new Error(`API HTTP ${apiResponse.status}`);
+      }
+
+      payload = await apiResponse.json();
+    } catch (apiError) {
+      payload = await loadContractsViaBrowserFallback();
+      usingBrowserFallback = true;
+      payload.apiErrorMessage = apiError instanceof Error ? apiError.message : String(apiError);
     }
 
-    const payload = await apiResponse.json();
     contractsData = Array.isArray(payload.contracts) ? payload.contracts : [];
     delistAnnouncements = Array.isArray(payload.delistAnnouncements) ? payload.delistAnnouncements : [];
     lastFetchedAt = payload.fetchedAt || new Date().toISOString();
@@ -284,6 +354,13 @@ async function loadContracts(options = {}) {
     renderDelistAnnouncements(delistAnnouncements);
     render();
 
+    if (usingBrowserFallback) {
+      updateSyncStatus(
+        `站内接口不可用，已切换浏览器直连模式 · 显示 ${contractsData.length} 个活跃交易对 · 下架公告暂不可用`
+      );
+      return;
+    }
+
     const refreshedAt = formatDateTime(lastFetchedAt);
     updateSyncStatus(
       `已同步 ${contractsData.length} 个活跃交易对，已剔除 ${delistAnnouncements.length} 个下架公告交易对 · 上次更新 ${refreshedAt}`
@@ -291,7 +368,7 @@ async function loadContracts(options = {}) {
   } catch (error) {
     updateSyncStatus(`同步失败 · ${error.message}`);
     renderDelistAnnouncements([]);
-    renderTable([], { emptyMessage: "无法从站内合约接口拉取最新数据。" });
+    renderTable([], { emptyMessage: "无法从站内合约接口或浏览器直连接口拉取最新数据。" });
   } finally {
     isLoading = false;
     refreshButtonEl.disabled = false;
