@@ -9,9 +9,9 @@
   <body>
     <div class="page-shell">
       <header class="hero">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Binance Contracts</p>
-          <h1>按上架时间查看币安合约交易对</h1>
+          <h1>币安合约交易对</h1>
           <p class="hero-text">
             支持按时间段筛选、搜索交易对，并按上架时间正序或倒序查看结果。
           </p>
@@ -103,6 +103,12 @@
       </section>
 
       <main>
+        <section class="section-heading">
+          <div>
+            <h2>合约上架公告列表</h2>
+            <p>按上架时间查看当前币安合约交易对，支持搜索、筛选、排序与分页。</p>
+          </div>
+        </section>
         <div class="table-shell">
           <table class="contracts-table">
             <thead>
@@ -129,9 +135,3 @@
         <div id="empty-state" class="empty-state hidden">
           <h2>没有匹配结果</h2>
           <p>调整搜索词或时间范围后再试试。</p>
-        </div>
-      </main>
-    </div>
-    <script src="./binance_contract_timeline.js"></script>
-  </body>
-</html>
