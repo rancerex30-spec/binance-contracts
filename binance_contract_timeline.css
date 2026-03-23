@@ -40,9 +40,12 @@ body {
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.9fr);
-  gap: 20px;
-  padding: 28px;
+  gap: 18px;
+  padding: 22px 28px 24px;
+}
+
+.hero-copy {
+  max-width: 760px;
 }
 
 .eyebrow {
@@ -56,27 +59,37 @@ body {
 .hero h1 {
   margin: 0;
   font-family: "Iowan Old Style", "Songti SC", serif;
-  font-size: clamp(30px, 5vw, 48px);
-  line-height: 1.06;
+  font-size: clamp(22px, 3vw, 32px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
 }
 
 .hero-text {
-  margin: 14px 0 0;
+  margin: 8px 0 0;
   max-width: 56ch;
   color: var(--muted);
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .hero-stats {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
 .stat-card {
-  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  min-height: 92px;
+  padding: 14px 18px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--panel-soft);
+  text-align: center;
 }
 
 .stat-label {
@@ -87,7 +100,13 @@ body {
 }
 
 .stat-card strong {
-  font-size: 28px;
+  font-size: clamp(22px, 2.6vw, 26px);
+  line-height: 1.15;
+}
+
+#date-range {
+  font-size: clamp(18px, 2vw, 22px);
+  white-space: nowrap;
 }
 
 .controls {
@@ -310,6 +329,18 @@ body {
   font-weight: 500;
 }
 
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid #d6d6d6;
+  border-radius: 999px;
+  background: #f6f6f6;
+  color: #222;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .empty-state {
   margin-top: 16px;
   padding: 36px 24px;
@@ -330,8 +361,11 @@ body {
 }
 
 @media (max-width: 960px) {
-  .hero,
   .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-stats {
     grid-template-columns: 1fr;
   }
 
