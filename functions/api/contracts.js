@@ -1,11 +1,14 @@
 const SPOT_URL = "https://api.binance.com/api/v3/exchangeInfo";
 const USD_M_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo";
 const COIN_M_URL = "https://dapi.binance.com/dapi/v1/exchangeInfo";
+const USD_M_FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex";
+const COIN_M_FUNDING_URL = "https://dapi.binance.com/dapi/v1/premiumIndex";
 const ANNOUNCEMENT_CATALOG_ID = 161;
 const ANNOUNCEMENT_PAGE_SIZE = 50;
 const ANNOUNCEMENT_INCREMENTAL_PAGES = 2;
-const CACHE_TTL_SECONDS = 30 * 60;
-const ANNOUNCEMENT_PAGE_CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_SECONDS = 60;
+const ANNOUNCEMENT_PAGE_CACHE_TTL_MS = 30 * 1000;
+const ANNOUNCEMENT_DETAIL_CACHE_TTL_MS = 5 * 60 * 1000;
 const ANNOUNCEMENT_TITLE_KEYWORDS = [
   "DELIST",
   "DELISTING",
@@ -32,9 +35,8 @@ const announcementDetailCache = new Map();
 const trackedAnnouncementArticles = new Map();
 let contractsPayloadCache = null;
 let contractsPayloadCacheAt = 0;
-let contractsPayloadRefreshPromise = null;
 
-function buildContract(item, market, status) {
+function buildContract(item, market, status, fundingInfo = null) {
   const underlyingSubType = Array.isArray(item.underlyingSubType) ? item.underlyingSubType : [];
 
   return {
@@ -51,7 +53,29 @@ function buildContract(item, market, status) {
     status,
     onboardDate: item.onboardDate,
     deliveryDate: item.deliveryDate,
+    fundingRate: fundingInfo?.fundingRate ?? null,
+    nextFundingTime: fundingInfo?.nextFundingTime ?? null,
+    fundingUpdatedAt: fundingInfo?.fundingUpdatedAt ?? null,
   };
+}
+
+function buildFundingMap(payload, key = "symbol") {
+  const values = new Map();
+
+  (Array.isArray(payload) ? payload : []).forEach((item) => {
+    const lookupKey = String(item?.[key] || item?.symbol || "").trim();
+    if (!lookupKey) {
+      return;
+    }
+
+    values.set(lookupKey, {
+      fundingRate: item?.lastFundingRate ?? null,
+      nextFundingTime: item?.nextFundingTime ?? null,
+      fundingUpdatedAt: item?.time ?? null,
+    });
+  });
+
+  return values;
 }
 
 function pickPreferredSpotSymbol(symbols) {
@@ -566,7 +590,7 @@ async function fetchAnnouncementPagePayloads() {
 }
 
 async function fetchAnnouncementDetails(candidateArticles) {
-  const uncachedArticles = candidateArticles.filter((article) => !announcementDetailCache.has(article.code));
+  const uncachedArticles = candidateArticles.filter((article) => !getFreshAnnouncementDetail(article.code));
   const fetchedRows = await Promise.all(
     uncachedArticles.map(async (article) => {
       try {
@@ -594,20 +618,42 @@ async function fetchAnnouncementDetails(candidateArticles) {
   );
 
   fetchedRows.forEach(([code, row]) => {
-    announcementDetailCache.set(code, row);
+    announcementDetailCache.set(code, {
+      value: row,
+      cachedAt: Date.now(),
+    });
   });
 
-  return candidateArticles.map((article) => announcementDetailCache.get(article.code)).filter(Boolean);
+  return candidateArticles
+    .map((article) => getFreshAnnouncementDetail(article.code))
+    .filter(Boolean);
 }
 
-function normalizePayload(usdmPayload, coinmPayload) {
+function getFreshAnnouncementDetail(code) {
+  const cached = announcementDetailCache.get(code);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.cachedAt >= ANNOUNCEMENT_DETAIL_CACHE_TTL_MS) {
+    announcementDetailCache.delete(code);
+    return null;
+  }
+
+  return cached.value;
+}
+
+function normalizePayload(usdmPayload, coinmPayload, usdmFundingPayload = [], coinmFundingPayload = []) {
+  const usdmFundingMap = buildFundingMap(usdmFundingPayload, "symbol");
+  const coinmFundingMap = buildFundingMap(coinmFundingPayload, "symbol");
+
   const usdm = (usdmPayload.symbols || [])
     .filter((item) => INCLUDED_CONTRACT_STATUSES.has(item.status))
-    .map((item) => buildContract(item, "USD-M", item.status));
+    .map((item) => buildContract(item, "USD-M", item.status, usdmFundingMap.get(item.symbol)));
 
   const coinm = (coinmPayload.symbols || [])
     .filter((item) => INCLUDED_CONTRACT_STATUSES.has(item.contractStatus))
-    .map((item) => buildContract(item, "COIN-M", item.contractStatus));
+    .map((item) => buildContract(item, "COIN-M", item.contractStatus, coinmFundingMap.get(item.symbol)));
 
   const contracts = [...usdm, ...coinm].sort((a, b) => {
     return (a.onboardDate || 0) - (b.onboardDate || 0) || String(a.symbol || "").localeCompare(String(b.symbol || ""));
@@ -617,12 +663,51 @@ function normalizePayload(usdmPayload, coinmPayload) {
 }
 
 async function rebuildContractsPayload() {
-  const [spotPayload, usdmPayload, coinmPayload] = await Promise.all([
+  const results = await Promise.allSettled([
     fetchJson(SPOT_URL),
     fetchJson(USD_M_URL),
     fetchJson(COIN_M_URL),
+    fetchJson(USD_M_FUNDING_URL),
+    fetchJson(COIN_M_FUNDING_URL),
   ]);
-  const payload = normalizePayload(usdmPayload, coinmPayload);
+
+  const sourceWarnings = [];
+  const [
+    spotResult,
+    usdmResult,
+    coinmResult,
+    usdmFundingResult,
+    coinmFundingResult,
+  ] = results;
+
+  const spotPayload = spotResult.status === "fulfilled" ? spotResult.value : {};
+  const usdmPayload = usdmResult.status === "fulfilled" ? usdmResult.value : null;
+  const coinmPayload = coinmResult.status === "fulfilled" ? coinmResult.value : null;
+  const usdmFundingPayload = usdmFundingResult.status === "fulfilled" ? usdmFundingResult.value : [];
+  const coinmFundingPayload = coinmFundingResult.status === "fulfilled" ? coinmFundingResult.value : [];
+
+  if (!usdmPayload || !coinmPayload) {
+    const missingRequiredSources = [];
+    if (!usdmPayload) {
+      missingRequiredSources.push("USD-M");
+    }
+    if (!coinmPayload) {
+      missingRequiredSources.push("COIN-M");
+    }
+    throw new Error(`必需合约接口不可用：${missingRequiredSources.join("、")}`);
+  }
+
+  if (spotResult.status === "rejected") {
+    sourceWarnings.push(`现货接口拉取失败：${spotResult.reason instanceof Error ? spotResult.reason.message : String(spotResult.reason)}`);
+  }
+  if (usdmFundingResult.status === "rejected") {
+    sourceWarnings.push(`USD-M 资金费率拉取失败：${usdmFundingResult.reason instanceof Error ? usdmFundingResult.reason.message : String(usdmFundingResult.reason)}`);
+  }
+  if (coinmFundingResult.status === "rejected") {
+    sourceWarnings.push(`COIN-M 资金费率拉取失败：${coinmFundingResult.reason instanceof Error ? coinmFundingResult.reason.message : String(coinmFundingResult.reason)}`);
+  }
+
+  const payload = normalizePayload(usdmPayload, coinmPayload, usdmFundingPayload, coinmFundingPayload);
   const spotAssetMap = buildSpotAssetMap(spotPayload);
   const enrichedDelistAnnouncements = await fetchDelistAnnouncementMetadata(payload.contracts, spotAssetMap);
   const delistSymbols = new Set(
@@ -637,28 +722,12 @@ async function rebuildContractsPayload() {
     fetchedAt: new Date().toISOString(),
     cacheTtlSeconds: CACHE_TTL_SECONDS,
     refreshing: false,
+    warnings: sourceWarnings,
   };
 }
 
 function hasFreshContractsCache() {
   return contractsPayloadCache && Date.now() - contractsPayloadCacheAt < CACHE_TTL_SECONDS * 1000;
-}
-
-function startContractsBackgroundRefresh() {
-  if (contractsPayloadRefreshPromise) {
-    return contractsPayloadRefreshPromise;
-  }
-
-  contractsPayloadRefreshPromise = rebuildContractsPayload()
-    .then((payload) => {
-      contractsPayloadCache = payload;
-      contractsPayloadCacheAt = Date.now();
-    })
-    .finally(() => {
-      contractsPayloadRefreshPromise = null;
-    });
-
-  return contractsPayloadRefreshPromise;
 }
 
 function buildContractsResponseBody(refreshing = false) {
@@ -671,28 +740,17 @@ function buildContractsResponseBody(refreshing = false) {
 export async function onRequestGet(context) {
   try {
     const force = new URL(context.request.url).searchParams.get("force") === "1";
-    let body;
-
-    if (contractsPayloadCache && hasFreshContractsCache()) {
-      if (force) {
-        context.waitUntil(startContractsBackgroundRefresh());
-        body = buildContractsResponseBody(true);
-      } else {
-        body = buildContractsResponseBody(Boolean(contractsPayloadRefreshPromise));
-      }
-    } else if (contractsPayloadCache) {
-      context.waitUntil(startContractsBackgroundRefresh());
-      body = buildContractsResponseBody(true);
-    } else {
+    if (force || !contractsPayloadCache || !hasFreshContractsCache()) {
       contractsPayloadCache = await rebuildContractsPayload();
       contractsPayloadCacheAt = Date.now();
-      body = buildContractsResponseBody(false);
     }
+
+    const body = buildContractsResponseBody(false);
 
     return new Response(body, {
       headers: {
         "content-type": "application/json; charset=utf-8",
-        "cache-control": `public, max-age=0, s-maxage=${CACHE_TTL_SECONDS}`,
+        "cache-control": "no-store",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
         "x-frame-options": "DENY",
