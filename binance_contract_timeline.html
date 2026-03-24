@@ -59,9 +59,9 @@
 
       <section class="toolbar">
         <div class="filters">
-          <button class="filter-chip active" data-market="ALL" type="button">全部市场</button>
-          <button class="filter-chip" data-market="USD-M" type="button">USD-M</button>
-          <button class="filter-chip" data-market="COIN-M" type="button">COIN-M</button>
+          <button class="filter-chip active" data-market="ALL" data-label="全部市场" type="button">全部市场</button>
+          <button class="filter-chip" data-market="USD-M" data-label="USD-M" type="button">USD-M</button>
+          <button class="filter-chip" data-market="COIN-M" data-label="COIN-M" type="button">COIN-M</button>
         </div>
         <div class="toolbar-actions">
           <span id="sync-status" class="sync-status">准备连接币安...</span>
@@ -90,6 +90,7 @@
                 <th>交易对</th>
                 <th>现货下架时间</th>
                 <th>合约下架时间</th>
+                <th>资金费率</th>
                 <th>状态标记</th>
                 <th>市场</th>
                 <th>基础币</th>
@@ -120,6 +121,7 @@
                 <th>计价币</th>
                 <th>代币类型</th>
                 <th>合约类型</th>
+                <th>资金费率</th>
               </tr>
             </thead>
             <tbody id="table-body"></tbody>
