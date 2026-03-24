@@ -341,6 +341,34 @@ body {
   font-weight: 600;
 }
 
+.funding-rate {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.funding-rate.positive {
+  color: #0f8a4b;
+  border-color: rgba(15, 138, 75, 0.18);
+  background: rgba(15, 138, 75, 0.08);
+}
+
+.funding-rate.negative {
+  color: #c53a2b;
+  border-color: rgba(197, 58, 43, 0.18);
+  background: rgba(197, 58, 43, 0.08);
+}
+
+.funding-rate.neutral {
+  color: #555555;
+  background: #f5f5f5;
+}
+
 .empty-state {
   margin-top: 16px;
   padding: 36px 24px;
